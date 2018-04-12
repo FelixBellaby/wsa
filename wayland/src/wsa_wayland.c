@@ -28,6 +28,11 @@
 #include "string.h"
 #include "unistd.h"
 #include "pthread.h"
+#include "sys/stat.h"
+
+// Match each WsaFormat with its wl_format
+#define INCLUDE_WL_DRM_FORMATS 1
+#include "wsa_presentable_formats.h"
 
 // include wayland-drm protocol definition from MESA
 #include "wayland-drm-protocol.c"
@@ -79,6 +84,11 @@ static void DrmHandleDevice(
     struct wl_drm* pDrm,
     const char*    pName)
 {
+    WaylandWsaInstance* ws = (WaylandWsaInstance*)pData;
+    struct stat statBuffer;
+    stat(pName, &statBuffer);
+
+    ws->gpuNumber = (statBuffer.st_rdev & 0x7f);
 }
 
 static void DrmHandleFormat(
@@ -86,6 +96,15 @@ static void DrmHandleFormat(
     struct wl_drm* pDrm,
     uint32         wl_format)
 {
+    WaylandWsaInstance* ws = (WaylandWsaInstance*)pData;
+
+    for (int i = 0; i < sizeof(presentableFormats)/sizeof(presentableFormats[0]); i++)
+    {
+        if (wl_format == presentableFormats[i].wlDrmFormat)
+        {
+            ws->presentableFormatMask |= (1<<i);
+        }
+    }
 }
 
 static void DrmHandleAuthenticated(
@@ -99,8 +118,9 @@ static void DrmHandleCapabilities(
     struct wl_drm* pDrm,
     uint32         capabilities)
 {
-    uint32 *cap = (uint32*)pData;
-    *cap = capabilities;
+    WaylandWsaInstance* ws = (WaylandWsaInstance*)pData;
+
+    ws->capabilities = capabilities;
 }
 
 //wayland drm callback
@@ -128,7 +148,7 @@ static void RegistryHandleGlobal(
         ws->pDrm = (struct wl_drm*)wl_registry_bind(pRegistry, name, &wl_drm_interface, 2);
         if (ws->pDrm)
         {
-            wl_drm_add_listener(ws->pDrm, &s_drmListener, &(ws->capabilities));
+            wl_drm_add_listener(ws->pDrm, &s_drmListener, pData);
         }
     }
 }
@@ -193,6 +213,8 @@ static WsaError CreateWaylandWsa(
 // Initialize a window system agent(WSA) for wayland.
 static WsaError InitializeWaylandWsa(
     int32 hWsa,
+    WsaFormat format,
+    WsaCompositeAlpha compositeAlpha,
     void* pDisplay,
     void* pSurface)
 {
@@ -252,6 +274,27 @@ static WsaError InitializeWaylandWsa(
     {
         wl_display_roundtrip_queue(pDisplay, s_instanceList[hWsa].pQueue);
         if (!(s_instanceList[hWsa].capabilities & WL_DRM_CAPABILITY_PRIME))
+        {
+            ret = UnknownFailure;
+        }
+    }
+
+    if (ret == Success)
+    {
+        for (int i = 0; i < sizeof(presentableFormats)/sizeof(presentableFormats[0]); i++)
+        {
+            if (format == presentableFormats[i].wsaFormat &&
+                compositeAlpha == presentableFormats[i].wsaCompositeAlpha &&
+                (s_instanceList[hWsa].presentableFormatMask & (1<<i)))
+            {
+                s_instanceList[hWsa].wsaFormat = format;
+                s_instanceList[hWsa].wsaCompositeAlpha = compositeAlpha;
+                s_instanceList[hWsa].wlDrmFormat = presentableFormats[i].wlDrmFormat;
+                break;
+            }
+        }
+
+        if (s_instanceList[hWsa].wlDrmFormat == 0)
         {
             ret = UnknownFailure;
         }
@@ -340,9 +383,11 @@ static WsaError WaylandCreateImage(
 {
     WSA_ASSERT((hWsa >= 0) && (hWsa < MAX_INSTANCE_NUMBER) && s_instanceList[hWsa].initialized);
     WSA_ASSERT((width != 0) && (height != 0) && (stride != 0) && (fd != -1) && pImage);
+    WSA_ASSERT(format == s_instanceList[hWsa].wsaFormat);
 
     struct wl_buffer* buffer;
-    buffer = wl_drm_create_prime_buffer(s_instanceList[hWsa].pDrmWrapper, fd, width, height, format, 0, stride, 0, 0, 0, 0);
+    buffer = wl_drm_create_prime_buffer(s_instanceList[hWsa].pDrmWrapper, fd, width, height,
+                                        s_instanceList[hWsa].wlDrmFormat, 0, stride, 0, 0, 0, 0);
     if (!buffer)
     {
         close(fd);
@@ -472,6 +517,13 @@ static WsaError WaylandImageAvailable(
     return ResourceBusy;
 }
 
+// Get card number.
+static uint32 WaylandGetGpuNumber(
+    int32 hWsa)
+{
+    return s_instanceList[hWsa].gpuNumber;
+}
+
 // Get window size.
 static WsaError WaylandGetWindowGeometry(
     void*   pDisplay,
@@ -507,6 +559,7 @@ EXPORT WsaInterface WaylandWsaInterface =
     .pfnPresent                   = WaylandPresent,
     .pfnWaitForLastImagePresented = WaylandWaitForLastImagePresented,
     .pfnImageAvailable            = WaylandImageAvailable,
+    .pfnGetGpuNumber              = WaylandGetGpuNumber,
     .pfnGetWindowGeometry         = WaylandGetWindowGeometry,
     .pfnPresentationSupported     = WaylandPresentationSupported,
 };

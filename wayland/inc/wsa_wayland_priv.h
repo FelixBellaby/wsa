@@ -45,6 +45,11 @@ typedef struct waylandWsaInstance
     struct wl_event_queue*           pQueue;
     struct wl_drm*                   pDrm;
     struct wl_drm*                   pDrmWrapper;
+    uint32                           gpuNumber;
+    WsaFormat                        wsaFormat;
+    WsaCompositeAlpha                wsaCompositeAlpha;
+    uint32                           presentableFormatMask;
+    uint32                           wlDrmFormat;
     uint32                           capabilities;
     struct wl_callback*              pFrame;
     bool                             frameCompleted;  // whether the last frame has been completed.
@@ -55,4 +60,3 @@ typedef struct waylandWsaSurface
     struct wl_buffer*                pSurface;
     bool                             busy;            // whether the buffer is busy
 }WaylandWsaSurface;
-
